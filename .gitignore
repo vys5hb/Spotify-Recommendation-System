@@ -67,3 +67,8 @@ tmp/
 # Secrets (ensure no credentials)
 # -------------------------------
 *.env
+
+# Virtual env
+.venv/
+.venv311/
+venv/
