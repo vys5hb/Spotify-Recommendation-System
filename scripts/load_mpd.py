@@ -12,7 +12,7 @@ ENGINE = create_engine(f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@localhost:{PG
 
 SLICE_GLOB = os.path.join(os.path.dirname(__file__), "..", "data", "mpd", "mpd.slice.*.json")
 
-def upsert_tracks(df_tracks: pd.DataFrame):
+def insert_tracks(df_tracks: pd.DataFrame):
     if df_tracks.empty: return
     df = df_tracks.drop_duplicates(subset=["track_uri"]).copy()
     with ENGINE.begin() as conn:
@@ -47,18 +47,18 @@ def insert_playlists(df_playlists: pd.DataFrame):
     df = df_playlists.drop_duplicates(subset=["pid"]).copy()
     with ENGINE.begin() as conn:
         conn.execute(text("""
-           CREATE TEMP TABLE tmp_playlists(
-               pid BIGINT,
-               name TEXT,
-               num_tracks INT,
-               num_artists INT,
-               num_albums INT,
-               num_followers INT,
-               num_edits INT,
-               playlist_duration BIGINT,
-               modified_at BIGINT,
-               collaborative BOOLEAN
-           )   ON COMMIT DROP;           
+          CREATE TEMP TABLE tmp_playlists(
+            pid BIGINT,
+            name TEXT,
+            num_tracks INT,
+            num_artists INT,
+            num_albums INT,
+            num_followers INT,
+            num_edits INT,
+            playlist_duration BIGINT,
+            modified_at BIGINT,
+            collaborative BOOLEAN
+          ) ON COMMIT DROP;           
         """))
         df.to_sql("tmp_playlists", conn, if_exists="append", index=False)
 
@@ -134,7 +134,7 @@ def main():
                     "pos": int(t.get("pos", 0)), 
                     "track_uri": t["track_uri"]})
 
-        upsert_tracks(pd.DataFrame(trks))
+        insert_tracks(pd.DataFrame(trks))
         insert_playlists(pd.DataFrame(pls))
         insert_playlist_tracks(pd.DataFrame(edges))
 

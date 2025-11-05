@@ -1,5 +1,69 @@
-data/
-pgdata/
+# -------------------------------
+# Python / Environment
+# -------------------------------
 __pycache__/
-*.__pycache__.env
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+.env
+.venv*/
+venv/
+*.log
+
+# -------------------------------
+# Jupyter / Spark
+# -------------------------------
 .ipynb_checkpoints/
+spark-warehouse/
+.metastore_db/
+.derby/
+
+# -------------------------------
+# Data and Parquet
+# -------------------------------
+data/
+raw_data/
+parquet_data/
+*.parquet
+*.csv
+*.json
+
+# -------------------------------
+# Build / Cache
+# -------------------------------
+.DS_Store
+*.swp
+*.swo
+*.tmp
+*.bak
+
+# -------------------------------
+# Docker / Local Runtime
+# -------------------------------
+postgres_data/
+tmp/
+*.pid
+*.sock
+
+# -------------------------------
+# VS Code / IDE
+# -------------------------------
+.vscode/
+.idea/
+
+# -------------------------------
+# Output / Generated Files
+# -------------------------------
+*.zip
+*.tar.gz
+*.gz
+*.out
+*.err
+
+# -------------------------------
+# Secrets (ensure no credentials)
+# -------------------------------
+*.env
