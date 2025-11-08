@@ -72,3 +72,9 @@ tmp/
 .venv/
 .venv311/
 venv/
+
+model.ipynb
+two_tower_best.pt
+practice.ipynb
+*.pt
+*.ipynb
