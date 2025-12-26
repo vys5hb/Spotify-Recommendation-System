@@ -77,7 +77,7 @@ train_pairs = bucketed.filter('bucket < 95').select('pid', 'tokens', 'mask', 'po
 val_pairs = bucketed.filter('bucket >= 95').select('pid', 'tokens', 'mask', 'pos_tid') # ~5% of the data
 
 # Write train_pairs to parquet for model training
-train_pairs.write.mode('overwrite').parquet('parquet_data/train_pairs')
+train_pairs.coalesce(16).write.mode('overwrite').parquet('parquet_data/train_pairs')
 print('Successfully saved train_pairs.')
 # Write val_pairs to parquet for model training
 val_pairs.write.mode('overwrite').parquet('parquet_data/val_pairs')
