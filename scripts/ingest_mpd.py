@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Read Spotify MPD JSON files and write three Parquet tables."""
-
+# Import Libraries
 import argparse
 import json
 import re
@@ -10,7 +9,7 @@ from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import ArrayType, BooleanType, LongType, StringType, StructField, StructType
 
 MPD_FILE_PATTERN = re.compile(r"mpd\.slice\.(\d+)-(\d+).*\.json$") # compiles regex to match MPD data filenames
-SLICE_RANGE_PATTERN = r"mpd\.slice\.(\d+)-(\d+)" # raw regex string that matches the slice range
+SLICE_RANGE_PATTERN = r"mpd\.slice\.(\d+)-(\d+)" # raw regex string that matches the slice range, captures "slice_start" and "slice_end"
 
 # Setting the schema of the JSON so it can be ingested into a Spark DataFrame
 # Spark reads the JSON more reliably when we tell it the shape up front.
@@ -96,8 +95,8 @@ def extract_id_from_uri(column): # input is a Spark Column object
     return F.when(column.isNull() | (extracted == ""), F.lit(None)).otherwise(extracted) # If column is null, or extracted value is empty, return null, otherwise return column
     # If value = "spotify:track:15twB7zTglmu0Bg8gW4Mrm", extracted = "15twB7zTglmu0Bg8gW4Mrm", if value = "spotify:track:", extracted = ""
 
-# Turn each nested playlist object into one flat row for playlists.parquet.
-# main() sends playlist_rows here right after the raw JSON is exploded into one row per playlist.
+
+# Turns each nested playlist from JSON into 1 flat row for playlists.parquet
 def build_playlists(playlist_rows):
     return (
         playlist_rows.select(
@@ -112,18 +111,21 @@ def build_playlists(playlist_rows):
             F.col("playlist.num_tracks").cast("long").alias("num_tracks"),
             F.col("playlist.duration_ms").cast("long").alias("duration_ms"),
             F.col("source_file"),
-            F.regexp_extract("source_file", SLICE_RANGE_PATTERN, 1).cast("int").alias("slice_start"),
-            F.regexp_extract("source_file", SLICE_RANGE_PATTERN, 2).cast("int").alias("slice_end"),
+            F.regexp_extract("source_file", SLICE_RANGE_PATTERN, 1).cast("int").alias("slice_start"), # Create "slice_start" of the group 1 slice from source_file column 
+            F.regexp_extract("source_file", SLICE_RANGE_PATTERN, 2).cast("int").alias("slice_end"), # Create "slice_end" of the group 2 slice from source_file column
+            # Ex:
+                # source_file = "mpd.slice.1000-1999.json"
+                # slice_start = 1000
+                # slice_end = 1999
         )
-        .where(F.col("pid").isNotNull())
+        .where(F.col("pid").isNotNull()) # remove rows where pid is null
     )
 
 
-# Build one unique row per track by exploding playlist tracks and collapsing duplicates.
-# main() uses this from the same playlist_rows dataframe before writing tracks.parquet.
+# Inside the flattened playlist rows, there is a nested tracks array. Notice how playlist.tracks isn't used in build_playlists
 def build_tracks(playlist_rows):
     return (
-        playlist_rows.select(F.explode_outer("playlist.tracks").alias("track"))
+        playlist_rows.select(F.explode_outer("playlist.tracks").alias("track")) # Explodes that tracks array into individual rows
         .where(F.col("track").isNotNull())
         .select(
             clean_text(F.col("track.track_uri")).alias("track_uri"),
@@ -139,6 +141,7 @@ def build_tracks(playlist_rows):
         )
         .where(F.col("track_uri").isNotNull())
         .groupBy("track_uri")
+        # Removes duplicate track_uri's and takes the first appearance of the track
         .agg(
             F.first("track_id", ignorenulls=True).alias("track_id"),
             F.first("track_name", ignorenulls=True).alias("track_name"),
@@ -159,7 +162,7 @@ def build_playlist_tracks(playlist_rows):
     return (
         playlist_rows.select(
             F.col("playlist.pid").cast("long").alias("pid"),
-            F.explode_outer("playlist.tracks").alias("track"),
+            F.explode_outer("playlist.tracks").alias("track"), # Similarly explodes the tracks array into individual rows, but doesn't remove the duplicates this time
         )
         .where(F.col("pid").isNotNull() & F.col("track").isNotNull())
         .select(
@@ -188,8 +191,7 @@ def parse_args():
     return parser.parse_args()
 
 
-# Run the ingestion in the same order you would do it by hand: find files, read JSON, flatten tables, write Parquet.
-# This is the one place where all of the helper functions above are connected into the full pipeline.
+# Uses the helper functions creating a pipeline which finds files, reads JSON, flattens tables, and writes to Parquet.
 def main():
     args = parse_args()
     input_files = find_mpd_files(args.input) # runs find_mpd_files() with the input_dir of data/
@@ -217,15 +219,17 @@ def main():
             .where(F.col("playlist").isNotNull()) # essentially removes null playlists
         )
 
-        # Cleans, standardizes, and builds each table before writing to parquet
+        # Cleans and builds each table before writing to parquet
         playlists_df = build_playlists(playlist_rows)
         tracks_df = build_tracks(playlist_rows)
         playlist_tracks_df = build_playlist_tracks(playlist_rows)
 
+        # Writes each Spark DataFrame into Parquet tables, write_mode determines overriding
         playlists_df.write.mode(write_mode).parquet(str(playlists_path))
         tracks_df.write.mode(write_mode).parquet(str(tracks_path))
         playlist_tracks_df.write.mode(write_mode).parquet(str(playlist_tracks_path))
 
+        # Validation summary to ensure data and paths are correct
         summary = {
             "input_file_count": len(input_files),
             "playlists_path": str(playlists_path),
@@ -234,7 +238,7 @@ def main():
         }
         print(json.dumps(summary, indent=2, sort_keys=True))
     finally:
-        spark.stop()
+        spark.stop() # Closes the spark connection
 
 if __name__ == "__main__":
     main()
