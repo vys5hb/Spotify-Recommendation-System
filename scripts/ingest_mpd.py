@@ -8,6 +8,17 @@ from pathlib import Path
 from pyspark.sql import SparkSession, functions as F
 from pyspark.sql.types import ArrayType, BooleanType, LongType, StringType, StructField, StructType
 
+# Create the Spark session that does the heavy dataframe work for this script.
+def create_spark_session(app_name, master, driver_memory):
+    return (
+        SparkSession.builder.appName(app_name) # name of Spark app (spotify-mpd-ingestion)
+        .master(master) # where the Spark Session will run (local)
+        .config("spark.driver.memory", driver_memory) # amount of RAM to give process (4 - 8GB)
+        .config("spark.sql.shuffle.partitions", "64") # when dealing with groupBy, joins, aggregations, we split into 64 partitions instead of the default 200 (easier on local device)
+        .config("spark.sql.session.timeZone", "UTC") # sets timezone to UTC
+        .getOrCreate() # if SparkSession already exists, return it, otherwise create a new one
+    )
+
 MPD_FILE_PATTERN = re.compile(r"mpd\.slice\.(\d+)-(\d+).*\.json$") # compiles regex to match MPD data filenames
 SLICE_RANGE_PATTERN = r"mpd\.slice\.(\d+)-(\d+)" # raw regex string that matches the slice range, captures "slice_start" and "slice_end"
 
@@ -51,7 +62,6 @@ MPD_SCHEMA = StructType(
 )
 
 # Finds all JSON files that match the MPD file pattern set above in an input directory
-# main() calls this in the beginning using data/ which holds all the MPD file data
 def find_mpd_files(input_dir):
     input_path = Path(input_dir) # creates a Path object to input_dir
     if not input_path.exists():
@@ -66,19 +76,6 @@ def find_mpd_files(input_dir):
         raise FileNotFoundError(f"No MPD JSON files found under: {input_path}")
 
     return mpd_files
-
-
-# Create the Spark session that does the heavy dataframe work for this script.
-# main() creates Spark here once, then uses that same session to read JSON and write Parquet.
-def create_spark_session(app_name, master, driver_memory):
-    return (
-        SparkSession.builder.appName(app_name) # name of Spark app (spotify-mpd-ingestion)
-        .master(master) # where the Spark Session will run (local)
-        .config("spark.driver.memory", driver_memory) # amount of RAM to give process (4 - 8GB)
-        .config("spark.sql.shuffle.partitions", "64") # when dealing with groupBy, joins, aggregations, we split into 64 partitions instead of the default 200 (easier on local device)
-        .config("spark.sql.session.timeZone", "UTC") # sets timezone to UTC
-        .getOrCreate() # if SparkSession already exists, return it, otherwise create a new one
-    )
 
 
 # Clean text columns by trimming whitespace and turning empty strings into nulls.
@@ -157,7 +154,6 @@ def build_tracks(playlist_rows):
 
 
 # Build the playlist-track interaction table, keeping every track occurrence and its playlist order.
-# main() uses this as the last transformed table before writing playlist_tracks.parquet.
 def build_playlist_tracks(playlist_rows):
     return (
         playlist_rows.select(
@@ -179,7 +175,7 @@ def build_playlist_tracks(playlist_rows):
         .where(F.col("track_uri").isNotNull() & F.col("pos").isNotNull())
     )
 
-# ArgumentParser allows us to call `python3 scripts/ingest_mpd.py --input data --output data/silver --overwrite --driver-memory 8g` to run this script with certain "settings"
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Ingest Spotify MPD JSON into three Parquet tables.")
     parser.add_argument("--input", required=True, help="Directory containing the MPD JSON files.")
@@ -191,10 +187,10 @@ def parse_args():
     return parser.parse_args()
 
 
-# Uses the helper functions creating a pipeline which finds files, reads JSON, flattens tables, and writes to Parquet.
+# Creating a pipeline which finds files, reads JSON, flattens tables, and writes to Parquet.
 def main():
     args = parse_args()
-    input_files = find_mpd_files(args.input) # runs find_mpd_files() with the input_dir of data/
+    input_files = find_mpd_files(args.input) # runs find_mpd_files() with the input_dir of data/bronze
     output_root = Path(args.output) # creates a Path object to data/silver where the Parquet tables will be stored
     output_root.mkdir(parents=True, exist_ok=True) # creates the output directory data/silver if it doesn't exist already
 

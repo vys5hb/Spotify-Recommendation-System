@@ -8,8 +8,10 @@ __pycache__/
 venv/
 
 # Generated data outputs
-data/*.json
+data/bronze/*.json
 data/silver/
 data
 
 README.md
+
+notebooks/
