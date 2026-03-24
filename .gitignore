@@ -11,6 +11,7 @@ venv/
 data/bronze/*.json
 data/silver/
 data
+artifacts/
 
 README.md
 

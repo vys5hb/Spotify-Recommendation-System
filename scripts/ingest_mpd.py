@@ -191,14 +191,17 @@ def parse_args():
 def main():
     args = parse_args()
     input_files = find_mpd_files(args.input) # runs find_mpd_files() with the input_dir of data/bronze
+    
     output_root = Path(args.output) # creates a Path object to data/silver where the Parquet tables will be stored
     output_root.mkdir(parents=True, exist_ok=True) # creates the output directory data/silver if it doesn't exist already
 
-    playlists_path = output_root / "playlists.parquet" # Creates path for data/silver/playlists.parquet
-    tracks_path = output_root / "tracks.parquet" # Creates path for data/silver/tracks.parquet
-    playlist_tracks_path = output_root / "playlist_tracks.parquet" # Creates path for data/silver/playlist_tracks.parquet
+    # Creates path for each parquet table write
+    playlists_path = output_root / "playlists.parquet"
+    tracks_path = output_root / "tracks.parquet"
+    playlist_tracks_path = output_root / "playlist_tracks.parquet" 
     write_mode = "overwrite" if args.overwrite else "errorifexists" # if we use --overwrite in CLI, then MPD file ingestion overwrites all old files in data/silver/{path}
 
+    # Creates SparkSession
     spark = create_spark_session(args.app_name, args.master, args.driver_memory) # Creates SparkSession with given a name, where to run it, and RAM to allocate it
 
     try:

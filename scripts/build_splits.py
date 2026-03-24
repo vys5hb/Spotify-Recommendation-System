@@ -178,8 +178,8 @@ def main():
     args = parse_args()
     validate_ratios(args.train_ratio, args.validation_ratio, args.test_ratio) # Ensures that the ratios add up to 1
 
-    output_root = Path(args.output) # Path object to data/gold
-    output_root.mkdir(parents=True, exist_ok=True) # Creates data/gold if doesn't exist
+    output_root = Path(args.output) # creates a Path object to data/silver where the Parquet tables will be stored
+    output_root.mkdir(parents=True, exist_ok=True) # creates the output directory data/silver if it doesn't exist already
 
     # Creates path for each parquet table write
     playlist_splits_path = output_root / "playlist_splits.parquet"
@@ -188,7 +188,7 @@ def main():
     validation_targets_path = output_root / "validation_targets.parquet"
     test_context_path = output_root / "test_context.parquet"
     test_targets_path = output_root / "test_targets.parquet"
-    write_mode = "overwrite" if args.overwrite else "errorifexists"
+    write_mode = "overwrite" if args.overwrite else "errorifexists" # if we use --overwrite in CLI, then MPD file ingestion overwrites all old files in data/silver/{path}
 
     # Creates SparkSession
     spark = create_spark_session(args.app_name, args.master, args.driver_memory)
@@ -198,9 +198,9 @@ def main():
         playlist_lengths_df = build_playlist_lengths(playlists_df, playlist_tracks_df) # Builds a DataFrame with pid, and accurate playlist length
         playlist_splits_df = assign_playlist_splits( # Builds DataFrame with pid, split, playlist length, eligible for eval
             playlist_lengths_df,
-            args.train_ratio,
-            args.validation_ratio,
-            args.min_playlist_length,
+            args.train_ratio, # .90
+            args.validation_ratio, # .05
+            args.min_playlist_length, # 5 songs
             args.seed,
         )
 
@@ -211,8 +211,8 @@ def main():
             playlist_splits_df,
             "validation",
             args.seed,
-            args.mask_fraction,
-            args.max_hidden,
+            args.mask_fraction, # .20
+            args.max_hidden, # 10 songs
         )
         # Builds our test masked DataFrames with default settings from args
         test_context_df, test_targets_df = build_masked_split(
@@ -220,8 +220,8 @@ def main():
             playlist_splits_df,
             "test",
             args.seed,
-            args.mask_fraction,
-            args.max_hidden,
+            args.mask_fraction, # .20
+            args.max_hidden, # 10 songs
         )
 
         # Writes train/val/test tables to parquet in data/gold
