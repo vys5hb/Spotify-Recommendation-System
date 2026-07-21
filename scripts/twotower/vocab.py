@@ -3,13 +3,24 @@ from pathlib import Path
 
 # Builds a "vocabulary" for each of track, artist, and album.
 # Translates each _id into a continuous integer, these become indices in an embedding table
-# 0 is masked, since playlists have variable lengths, when we bath them together in PyTorch, we need to ensure there is an index that we know is empty
-# 0 is also masked so that during inference time, if a track appears that wasn't in our training data, we can encode it to 0 instead of causing an error
+# Two indices are reserved and never map to a real ID:
+#   index 0 = PAD. Playlists have variable length; when we batch them together in
+#             PyTorch, short playlists are padded with 0 to mark an empty slot.
+#             PAD is masked out during pooling so it contributes nothing.
+#   index 1 = UNK. At encode() time, any ID not in the vocab (never seen in
+#             training, or dropped by the frequency cutoff) maps here. UNK is a
+#             single learnable "generic unseen item" vector, kept separate from
+#             PAD so an empty slot and an unknown item don't share an embedding.
 class Vocabulary:
     """Maps string IDs (track_id, artist_id, album_id) to contiguous integers.
-    
-    Index 0 is reserved for padding / unknown tokens. Real IDs start at index 1.
+
+    Index 0 = PAD (masked empty slot), index 1 = UNK (unseen / below-cutoff ID).
+    Real IDs start at index 2.
     """
+    PAD_INDEX = 0
+    UNK_INDEX = 1
+    NUM_RESERVED = 2  # reserved slots (PAD, UNK) preceding the first real ID
+
     def __init__(self, id_to_index, index_to_id):
         self.id_to_index = id_to_index
         self.index_to_id = index_to_id
@@ -24,20 +35,24 @@ class Vocabulary:
             ids: list of unique string IDs (e.g., all track_ids from training data).
 
         Returns:
-            Vocabulary with index 0 reserved for padding/unknown.
+            Vocabulary with index 0 reserved for PAD and index 1 for UNK.
         """
-        sorted_ids = sorted(set(ids))
-        id_to_index = {string_id: idx + 1 for idx, string_id in enumerate(sorted_ids)}
-        index_to_id = {idx + 1: string_id for idx, string_id in enumerate(sorted_ids)}
-        return cls(id_to_index, index_to_id)
+        sorted_ids = sorted(set(ids)) # List of alphanumerically ordered unique string IDs
+        id_to_index = {}
+        index_to_id = {}
+        for idx, string_id in enumerate(sorted_ids): # enumerate gives tuples (0, string1), (1, string2), etc.
+            index = idx + cls.NUM_RESERVED # real IDs start after the PAD/UNK slots
+            id_to_index[string_id] = index
+            index_to_id[index] = string_id
+        return cls(id_to_index, index_to_id) # same data with key/value flipped
 
     def encode(self, string_id):
-        """Convert a string ID to its integer index. Returns 0 if unknown."""
-        return self.id_to_index.get(string_id, 0)
+        """Convert a string ID to its integer index. Returns UNK_INDEX (1) if unknown."""
+        return self.id_to_index.get(string_id, self.UNK_INDEX)
 
     def encode_batch(self, string_ids):
         """Convert a list of string IDs to a list of integer indices."""
-        return [self.id_to_index.get(sid, 0) for sid in string_ids]
+        return [self.id_to_index.get(sid, self.UNK_INDEX) for sid in string_ids]
 
     def decode(self, index):
         """Convert an integer index back to its string ID. Returns None if unknown."""
@@ -46,8 +61,8 @@ class Vocabulary:
 
     @property # Allows size to be called like .size, instead of .size()
     def size(self):
-        """Total vocabulary size including the padding token at index 0."""
-        return len(self.id_to_index) + 1
+        """Total vocabulary size including the reserved PAD (0) and UNK (1) tokens."""
+        return len(self.id_to_index) + self.NUM_RESERVED
 
     def save(self, path):
         """Save vocabulary to a JSON file."""
