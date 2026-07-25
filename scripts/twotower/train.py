@@ -57,6 +57,17 @@ def move_batch(batch, device):
     return {key: value.to(device) for key, value in batch.items()}
 
 
+def compute_item_counts(cache_path, num_tracks):
+    """Per-track occurrence counts in train, for the logQ correction.
+
+    bincount over the flat track_idx gives how many times each track index appears
+    across all playlists — i.e. its sampling frequency as an in-batch negative.
+    """
+    data = np.load(cache_path)
+    counts = np.bincount(data["track_idx"], minlength=num_tracks)
+    return torch.from_numpy(counts)
+
+
 def in_batch_accuracy(playlist_vec, item_vec):
     """Fraction of playlists whose top-scoring item (in the batch) is its own positive.
 
@@ -81,8 +92,10 @@ def train_one_epoch(model, loader, optimizer, device, epoch, log_every, max_step
         batch = move_batch(batch, device)
 
         # Forward: encode both towers, then the in-batch-negative softmax loss.
+        # pos_track is passed so the loss can apply the logQ correction (a no-op
+        # unless model.set_item_log_q was called).
         playlist_vec, item_vec = model(batch)
-        loss = model.in_batch_softmax_loss(playlist_vec, item_vec)
+        loss = model.in_batch_softmax_loss(playlist_vec, item_vec, item_indices=batch["pos_track"])
 
         # Backward + update: the standard three-step dance.
         optimizer.zero_grad()
@@ -145,6 +158,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Seed for shuffle, sampling, and init.")
     parser.add_argument("--log-every", type=int, default=50, help="Print a line every N steps.")
     parser.add_argument("--max-steps", type=int, default=0, help="Stop after N total steps (0 = no limit). Use for smoke tests.")
+    parser.add_argument("--logq", action="store_true", help="Apply the logQ sampling-bias correction (debias in-batch negatives against popular tracks).")
     return parser.parse_args()
 
 
@@ -165,6 +179,12 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"vocab sizes: {vocab_sizes}")
     print(f"model: {n_params:,} params at dim {args.dim}")
+
+    # logQ correction: fill the model's per-track log sampling probability from the
+    # train frequencies. Without this the correction stays a no-op.
+    if args.logq:
+        model.set_item_log_q(compute_item_counts(args.cache, vocab_sizes["track"]).to(device))
+        print("logQ correction: ENABLED (in-batch negatives debiased by track popularity)")
 
     # Data.
     dataset = PlaylistDataset(args.cache, max_context_len=args.max_context_len)
@@ -188,6 +208,7 @@ def main():
         "vocab_sizes": vocab_sizes,
         "embedding_dim": args.dim,
         "temperature": args.temperature,
+        "logq": bool(args.logq),
     }
 
     out_dir = Path(args.out)

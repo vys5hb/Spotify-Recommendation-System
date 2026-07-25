@@ -94,6 +94,20 @@ def _encode_column(series, id_to_index):
     return series.map(id_to_index).fillna(UNK_INDEX).astype(np.int64).to_numpy()
 
 
+def _read_parquet_path(path):
+    """Read a parquet path that may be a single .parquet file OR a Spark-style
+    directory of part files. Lets the gold tables be uploaded either way."""
+    path = Path(path)
+    if path.is_dir():
+        files = sorted(glob.glob(str(path / "*.parquet")))
+        if not files:
+            raise FileNotFoundError(f"No .parquet part files found under {path}")
+        return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    if not path.exists():
+        raise FileNotFoundError(f"Parquet path does not exist: {path}")
+    return pd.read_parquet(path)
+
+
 def load_eval_playlists(gold_dir, split, vocabs, limit, seed):
     """Read the split's context + targets, encode, and group per playlist.
 
@@ -104,8 +118,8 @@ def load_eval_playlists(gold_dir, split, vocabs, limit, seed):
     Matches run_baselines: targets are deduplicated, context is excluded at scoring.
     """
     gold_dir = Path(gold_dir)
-    ctx = pd.concat([pd.read_parquet(f) for f in glob.glob(str(gold_dir / f"{split}_context.parquet/*.parquet"))], ignore_index=True)
-    tgt = pd.concat([pd.read_parquet(f) for f in glob.glob(str(gold_dir / f"{split}_targets.parquet/*.parquet"))], ignore_index=True)
+    ctx = _read_parquet_path(gold_dir / f"{split}_context.parquet")
+    tgt = _read_parquet_path(gold_dir / f"{split}_targets.parquet")
 
     ctx = ctx[ctx["track_id"].notna()].sort_values(["pid", "pos"])
     ctx["t"] = _encode_column(ctx["track_id"], vocabs["track"].id_to_index)

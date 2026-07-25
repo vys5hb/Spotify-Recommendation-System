@@ -123,6 +123,45 @@ def test_pad_row_stays_zero_after_step():
         assert torch.all(emb.weight[PAD_INDEX] == 0), "PAD row moved off zero"
 
 
+def test_logq_setter_and_shapes():
+    """set_item_log_q builds log(Q); a more frequent track has a larger (less
+    negative) log_q than a rarer one."""
+    model = _tiny_model()
+    counts = torch.zeros(50)
+    counts[5] = 100   # popular track
+    counts[6] = 1     # rare track
+    model.set_item_log_q(counts)
+    assert model.item_log_q.shape == (50,)
+    assert model.item_log_q[5] > model.item_log_q[6]   # popular -> higher log Q
+
+
+def test_logq_noop_when_uniform():
+    """Uniform sampling probabilities subtract the same constant from every column,
+    which softmax is invariant to — so the loss matches the uncorrected one."""
+    model = _tiny_model()
+    batch = _fake_batch(B=4, L=5)
+    playlist_vec, item_vec = model(batch)
+
+    base = model.in_batch_softmax_loss(playlist_vec, item_vec)          # no correction
+    model.set_item_log_q(torch.ones(50))                               # uniform counts
+    uniform = model.in_batch_softmax_loss(playlist_vec, item_vec, item_indices=batch["pos_track"])
+    assert torch.allclose(base, uniform, atol=1e-5)
+
+
+def test_logq_changes_loss_when_skewed():
+    """A skewed popularity distribution actually changes the loss."""
+    model = _tiny_model()
+    batch = _fake_batch(B=4, L=5)
+    playlist_vec, item_vec = model(batch)
+
+    base = model.in_batch_softmax_loss(playlist_vec, item_vec)
+    skewed = torch.arange(1, 51, dtype=torch.float32)                  # very non-uniform counts
+    model.set_item_log_q(skewed)
+    corrected = model.in_batch_softmax_loss(playlist_vec, item_vec, item_indices=batch["pos_track"])
+    assert not torch.allclose(base, corrected)
+    assert torch.isfinite(corrected)
+
+
 def test_training_reduces_loss():
     """A few steps on a fixed batch should drive the loss down (it can learn)."""
     model = _tiny_model()

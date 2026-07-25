@@ -64,7 +64,28 @@ class TwoTowerModel(nn.Module):
         self.artist_emb = nn.Embedding(artist_vocab_size, embedding_dim, padding_idx=pad_index)
         self.album_emb = nn.Embedding(album_vocab_size, embedding_dim, padding_idx=pad_index)
 
+        # logQ / sampling-bias correction (Yi et al. 2019): per-track log sampling
+        # probability, subtracted from the in-batch logits to undo the popularity
+        # bias of in-batch negatives (popular tracks appear as negatives far more
+        # often, so the model over-penalizes them without this). Non-persistent
+        # buffer (not saved in the checkpoint): all zeros = no correction, which is
+        # the default. train.py fills it from the train track frequencies via
+        # set_item_log_q when --logq is enabled.
+        self.register_buffer("item_log_q", torch.zeros(track_vocab_size), persistent=False)
+
         self._init_weights()
+
+    def set_item_log_q(self, item_counts):
+        """Populate the logQ table from per-track train occurrence counts.
+
+        Q(track) = count / total; we store log(Q). A track's Q is how likely it is
+        to appear as an in-batch negative, so subtracting log(Q) later removes that
+        sampling bias. Counts of 0 (PAD/UNK/unused rows) are floored so log is finite.
+        """
+        counts = item_counts.to(self.item_log_q.device, dtype=torch.float64)
+        q = counts / counts.sum()
+        q = q.clamp(min=1e-12)   # floor so log(0) never happens
+        self.item_log_q.copy_(torch.log(q).to(self.item_log_q.dtype))
 
     def _init_weights(self):
         """Small-magnitude init so early scores stay in a sane range for softmax."""
@@ -143,8 +164,8 @@ class TwoTowerModel(nn.Module):
     # Loss
     # ------------------------------------------------------------------
 
-    def in_batch_softmax_loss(self, playlist_vec, item_vec):
-        """In-batch-negative softmax cross-entropy.
+    def in_batch_softmax_loss(self, playlist_vec, item_vec, item_indices=None):
+        """In-batch-negative softmax cross-entropy (optionally logQ-corrected).
 
         For a batch of B playlists and their B positive items, score every
         playlist against every item -> a [B, B] matrix. Row i's correct answer is
@@ -154,13 +175,26 @@ class TwoTowerModel(nn.Module):
 
         We L2-normalize both sides first, so the score is cosine similarity in
         [-1, 1]; dividing by the temperature scales it into useful softmax logits.
-        (Swap the normalization out for a raw dot product if you prefer.)
+
+        If ``item_indices`` (the batch's B track indices, i.e. pos_track) is given,
+        we apply the **logQ correction**: subtract log(Q(item_j)) from column j,
+        where Q(item_j) is that track's sampling probability. Popular tracks (large
+        Q) get a bigger subtraction, undoing the in-batch-negative popularity bias.
+        With the default zero ``item_log_q`` this is a no-op, so passing indices is
+        harmless until set_item_log_q has been called.
         """
         playlist_vec = F.normalize(playlist_vec, dim=-1)
         item_vec = F.normalize(item_vec, dim=-1)
-        
+
         # [B, D] @ [B, D]^T = [B, B]
-        logits = playlist_vec @ item_vec.t() / self.temperature 
+        logits = playlist_vec @ item_vec.t() / self.temperature
+
+        # logQ correction: subtract log(Q(item_j)) from column j (broadcast over
+        # rows). Column j is item j's column for EVERY playlist, so the correction
+        # is per-candidate, not per-query.
+        if item_indices is not None:
+            log_q = self.item_log_q[item_indices]        # [B]
+            logits = logits - log_q.unsqueeze(0)         # [B, B] - [1, B]
 
         # The positive for row i sits at column i (both came from the same batch position), so the targets are just 0, 1, ..., B-1.
         targets = torch.arange(logits.size(0), device=logits.device)

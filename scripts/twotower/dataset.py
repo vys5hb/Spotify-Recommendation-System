@@ -27,7 +27,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from pyspark.sql import SparkSession, functions as F
+# NOTE: PySpark is imported lazily inside the cache-builder functions
+# (create_spark_session / build_cache), NOT at module load. That way importing
+# this module for the training-time classes (PlaylistDataset, collate_playlists,
+# make_dataloader) does not require PySpark/Java — handy on a GPU box (e.g. Kaggle)
+# that has torch but no Spark.
 
 # The Vocabulary class lives beside this file. When dataset.py is run as a
 # script, scripts/ is on sys.path[0], so `from twotower.vocab import Vocabulary`
@@ -55,6 +59,7 @@ PAD_INDEX = Vocabulary.PAD_INDEX
 
 # Mirrors the SparkSession config used across the other scripts.
 def create_spark_session(app_name, master, driver_memory):
+    from pyspark.sql import SparkSession  # lazy: only the cache builder needs Spark
     return (
         SparkSession.builder.appName(app_name)
         .master(master)
@@ -98,6 +103,8 @@ def build_cache(train_path, vocab_dir, output_path, min_playlist_length, spark):
             leave-one-out (context, positive) split is always possible.
         spark: an active SparkSession.
     """
+    from pyspark.sql import functions as F  # lazy: only the cache builder needs Spark
+
     if min_playlist_length < 2:
         raise ValueError(
             f"min_playlist_length must be >= 2 to form a (context, positive) split, got {min_playlist_length}"
