@@ -29,6 +29,34 @@ PAD_INDEX = 0
 DEFAULT_EMBEDDING_DIM = 128
 DEFAULT_TEMPERATURE = 0.05
 
+# hidden_dims=None means "no MLP head" — each tower stays purely linear (sum the
+# entity embeddings, pool, done), which is the original architecture.
+DEFAULT_HIDDEN_DIMS = None
+
+
+def build_mlp(input_dim, hidden_dims, output_dim):
+    """Build the tower head: Linear -> ReLU -> ... -> Linear, or a pass-through.
+
+    With hidden_dims falsy (None or []) this returns nn.Identity, so the tower
+    behaves EXACTLY as it did before the MLP existed — that keeps old checkpoints
+    loadable and makes the with/without comparison a clean ablation.
+
+    With e.g. hidden_dims=[256] you get Linear(D, 256) -> ReLU -> Linear(256, D).
+    Hidden layers get ReLU; the final layer stays linear because its output is the
+    embedding we L2-normalize (an activation there would distort the vector).
+    """
+    if not hidden_dims:
+        return nn.Identity()   # nn.Identity: a built-in no-op layer, returns its input unchanged
+
+    layers = []
+    prev_dim = input_dim
+    for hidden_dim in hidden_dims:
+        layers.append(nn.Linear(prev_dim, hidden_dim))
+        layers.append(nn.ReLU())
+        prev_dim = hidden_dim
+    layers.append(nn.Linear(prev_dim, output_dim))   # project back to D, no activation
+    return nn.Sequential(*layers)   # nn.Sequential: runs the layers in order
+
 
 class TwoTowerModel(nn.Module):
     """Shared-embedding two-tower model with in-batch-negative softmax training."""
@@ -40,6 +68,7 @@ class TwoTowerModel(nn.Module):
         album_vocab_size,
         embedding_dim=DEFAULT_EMBEDDING_DIM,
         temperature=DEFAULT_TEMPERATURE,
+        hidden_dims=DEFAULT_HIDDEN_DIMS,
         pad_index=PAD_INDEX,
     ):
         """Args:
@@ -49,12 +78,18 @@ class TwoTowerModel(nn.Module):
                 playlist / item vectors, since we sum same-sized embeddings).
             temperature: divides the similarity scores before softmax. Lower =
                 sharper distribution, larger gradients on the hardest negatives.
+            hidden_dims: list of hidden layer widths for each tower's MLP head,
+                e.g. [256]. None/[] = no MLP (purely linear towers, the original
+                architecture). Each tower gets its OWN MLP — the towers are meant
+                to be independent encoders, even though they share the embedding
+                tables underneath.
             pad_index: the reserved PAD row to freeze at zero (index 0).
         """
         super().__init__()  # required: sets up the nn.Module machinery before we add layers
 
         self.embedding_dim = embedding_dim
         self.temperature = temperature
+        self.hidden_dims = hidden_dims
 
         # The three shared embedding tables. padding_idx=pad_index keeps row 0
         # (PAD) pinned to zeros with no gradient; every other row (including UNK
@@ -72,6 +107,12 @@ class TwoTowerModel(nn.Module):
         # the default. train.py fills it from the train track frequencies via
         # set_item_log_q when --logq is enabled.
         self.register_buffer("item_log_q", torch.zeros(track_vocab_size), persistent=False)
+
+        # MLP heads, one per tower. These sit AFTER pooling (playlist side) and
+        # after the embedding sum (item side), giving each tower the capacity to
+        # learn a nonlinear transform instead of just averaging vectors.
+        self.playlist_mlp = build_mlp(embedding_dim, hidden_dims, embedding_dim)
+        self.item_mlp = build_mlp(embedding_dim, hidden_dims, embedding_dim)
 
         self._init_weights()
 
@@ -127,8 +168,12 @@ class TwoTowerModel(nn.Module):
         mask = context_mask.unsqueeze(-1).to(tokens.dtype)  # [B, L, 1]
         summed = (tokens * mask).sum(dim=1)                  # [B, D]
         counts = mask.sum(dim=1).clamp(min=1.0)              # [B, 1]  (avoid /0)
-        return summed / counts                               # [B, D]
+        pooled = summed / counts                             # [B, D]
         # Returns average of the embeddings of all tracks in the playlist (gives general representation of the playlist through the average of the 3 embedding tables)
+
+        # MLP head runs AFTER pooling, so PAD tokens are already masked out and
+        # can't leak in. With hidden_dims=None this is nn.Identity (a no-op).
+        return self.playlist_mlp(pooled)                     # [B, D]
 
     def encode_item(self, track, artist, album):
         """Item tower: embed a single candidate track into a [B, D] vector.
@@ -136,7 +181,8 @@ class TwoTowerModel(nn.Module):
         No pooling — one token in, one vector out. Uses the same tables as the
         playlist tower, so item vectors live in the same space as playlist vectors.
         """
-        return self.embed_tokens(track, artist, album)  # [B, D]
+        tokens = self.embed_tokens(track, artist, album)  # [B, D]
+        return self.item_mlp(tokens)                      # [B, D]  (Identity if no MLP)
 
     def forward(self, batch):
         """Encode a training batch with both towers.
@@ -201,7 +247,12 @@ class TwoTowerModel(nn.Module):
         return F.cross_entropy(logits, targets)
 
 
-def build_model_from_vocab_sizes(vocab_sizes, embedding_dim=DEFAULT_EMBEDDING_DIM, temperature=DEFAULT_TEMPERATURE):
+def build_model_from_vocab_sizes(
+    vocab_sizes,
+    embedding_dim=DEFAULT_EMBEDDING_DIM,
+    temperature=DEFAULT_TEMPERATURE,
+    hidden_dims=DEFAULT_HIDDEN_DIMS,
+):
     """Convenience constructor from a {'track','artist','album': size} dict.
 
     Mirrors the entity naming used by dataset.py / build_vocab.py so training code
@@ -213,4 +264,5 @@ def build_model_from_vocab_sizes(vocab_sizes, embedding_dim=DEFAULT_EMBEDDING_DI
         album_vocab_size=vocab_sizes["album"],
         embedding_dim=embedding_dim,
         temperature=temperature,
+        hidden_dims=hidden_dims,
     )

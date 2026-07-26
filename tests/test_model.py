@@ -162,6 +162,94 @@ def test_logq_changes_loss_when_skewed():
     assert torch.isfinite(corrected)
 
 
+def _mlp_model(dim=16, hidden_dims=(32,)):
+    torch.manual_seed(0)
+    return TwoTowerModel(
+        track_vocab_size=50, artist_vocab_size=20, album_vocab_size=30,
+        embedding_dim=dim, temperature=0.05, hidden_dims=list(hidden_dims),
+    )
+
+
+def test_mlp_head_shapes_unchanged():
+    """The MLP head projects back to D, so tower outputs keep the same shape."""
+    model = _mlp_model(dim=16, hidden_dims=(32,))
+    batch = _fake_batch(B=4, L=5)
+    playlist_vec, item_vec = model(batch)
+    assert playlist_vec.shape == (4, 16)
+    assert item_vec.shape == (4, 16)
+
+
+def test_no_mlp_is_identity():
+    """hidden_dims=None must behave EXACTLY like the pre-MLP architecture.
+
+    Guards the ablation: the 'off' arm has to be the original model, not an
+    almost-original one, or the with/without comparison is meaningless.
+    """
+    model = _tiny_model()
+    batch = _fake_batch(B=4, L=5)
+
+    pooled = model.encode_playlist(
+        batch["context_track"], batch["context_artist"],
+        batch["context_album"], batch["context_mask"],
+    )
+    # Recompute the masked mean by hand, bypassing the head entirely.
+    tokens = model.embed_tokens(batch["context_track"], batch["context_artist"], batch["context_album"])
+    mask = batch["context_mask"].unsqueeze(-1).to(tokens.dtype)
+    expected = (tokens * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+
+    assert torch.allclose(pooled, expected, atol=1e-6)
+
+
+def test_mlp_adds_parameters():
+    """The MLP arm has strictly more parameters than the linear arm."""
+    linear = _tiny_model(dim=16)
+    mlp = _mlp_model(dim=16, hidden_dims=(32,))
+    n_linear = sum(p.numel() for p in linear.parameters())
+    n_mlp = sum(p.numel() for p in mlp.parameters())
+    # Two heads, each Linear(16,32) + Linear(32,16) = 2 * (16*32+32 + 32*16+16)
+    assert n_mlp - n_linear == 2 * ((16 * 32 + 32) + (32 * 16 + 16))
+
+
+def test_mlp_masked_pool_still_ignores_pad():
+    """The head runs after pooling, so PAD still can't leak into the vector."""
+    model = _mlp_model()
+    batch = _fake_batch(B=2, L=5)
+
+    v1 = model.encode_playlist(
+        batch["context_track"], batch["context_artist"],
+        batch["context_album"], batch["context_mask"],
+    )
+    tampered = {k: v.clone() for k, v in batch.items()}
+    tampered["context_track"][0, 2:] = 7
+    tampered["context_artist"][0, 2:] = 5
+    tampered["context_album"][0, 2:] = 9
+    v2 = model.encode_playlist(
+        tampered["context_track"], tampered["context_artist"],
+        tampered["context_album"], batch["context_mask"],
+    )
+    assert torch.allclose(v1, v2, atol=1e-6)
+
+
+def test_mlp_model_trains():
+    """The MLP arm can still learn (gradients flow through the head)."""
+    model = _mlp_model(dim=16, hidden_dims=(32,))
+    batch = _fake_batch(B=8, L=6)
+    opt = torch.optim.Adam(model.parameters(), lr=0.05)
+
+    losses = []
+    for _ in range(30):
+        playlist_vec, item_vec = model(batch)
+        loss = model.in_batch_softmax_loss(playlist_vec, item_vec)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        losses.append(loss.item())
+
+    assert losses[-1] < losses[0], f"loss did not decrease: {losses[0]:.3f} -> {losses[-1]:.3f}"
+    # The head must actually receive gradient, not sit inert.
+    assert model.playlist_mlp[0].weight.grad is not None
+
+
 def test_training_reduces_loss():
     """A few steps on a fixed batch should drive the loss down (it can learn)."""
     model = _tiny_model()

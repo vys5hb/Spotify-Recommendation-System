@@ -50,8 +50,11 @@ def load_model(checkpoint_path, device):
     """Rebuild the model from a checkpoint's saved config and load its weights."""
     ck = torch.load(checkpoint_path, map_location=device, weights_only=False)
     cfg = ck["config"]
+    # .get() so checkpoints saved before the MLP head existed still load (they
+    # have no "hidden_dims" key, and None = the linear towers they were trained with).
     model = build_model_from_vocab_sizes(
         cfg["vocab_sizes"], embedding_dim=cfg["embedding_dim"], temperature=cfg["temperature"],
+        hidden_dims=cfg.get("hidden_dims"),
     )
     model.load_state_dict(ck["model_state_dict"])
     model = model.to(device).eval()   # eval() = inference mode (no dropout/bn updates)

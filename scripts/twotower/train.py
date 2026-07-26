@@ -46,6 +46,18 @@ def select_device(requested):
     return torch.device("cpu")
 
 
+def parse_hidden_dims(spec):
+    """Turn a --hidden-dims string into a list of ints (or None for "no MLP").
+
+    "256" -> [256]        one hidden layer
+    "256,256" -> [256, 256]
+    "" / "none" / "0" -> None   (purely linear towers, the original architecture)
+    """
+    if not spec or spec.strip().lower() in {"none", "0", ""}:
+        return None
+    return [int(part) for part in spec.split(",") if part.strip()]
+
+
 def load_vocab_sizes(vocab_dir):
     """Read the three vocab sizes from vocab_metadata.json (fast, no full load)."""
     meta = json.loads((Path(vocab_dir) / "vocab_metadata.json").read_text())
@@ -147,6 +159,7 @@ def parse_args():
     parser.add_argument("--vocab-dir", default="artifacts/vocab", help="Directory with the vocab JSONs + metadata.")
     parser.add_argument("--out", default="artifacts/twotower/checkpoints", help="Directory to write checkpoints.")
     parser.add_argument("--dim", type=int, default=128, help="Embedding dimension.")
+    parser.add_argument("--hidden-dims", default="", help="Comma-separated MLP head widths per tower, e.g. '256' or '256,256'. Empty (default) = no MLP, purely linear towers.")
     parser.add_argument("--temperature", type=float, default=0.05, help="Softmax temperature for the loss.")
     parser.add_argument("--batch-size", type=int, default=1024, help="Playlists per step (also the in-batch negative count).")
     parser.add_argument("--epochs", type=int, default=5, help="Number of full passes over the training playlists.")
@@ -174,11 +187,15 @@ def main():
 
     # Build the model, sized from the saved vocab, and move it to the device.
     vocab_sizes = load_vocab_sizes(args.vocab_dir)
-    model = build_model_from_vocab_sizes(vocab_sizes, embedding_dim=args.dim, temperature=args.temperature)
+    hidden_dims = parse_hidden_dims(args.hidden_dims)
+    model = build_model_from_vocab_sizes(
+        vocab_sizes, embedding_dim=args.dim, temperature=args.temperature, hidden_dims=hidden_dims,
+    )
     model = model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"vocab sizes: {vocab_sizes}")
     print(f"model: {n_params:,} params at dim {args.dim}")
+    print(f"tower head: {'MLP ' + str(hidden_dims) if hidden_dims else 'linear (no MLP)'}")
 
     # logQ correction: fill the model's per-track log sampling probability from the
     # train frequencies. Without this the correction stays a no-op.
@@ -208,6 +225,7 @@ def main():
         "vocab_sizes": vocab_sizes,
         "embedding_dim": args.dim,
         "temperature": args.temperature,
+        "hidden_dims": hidden_dims,
         "logq": bool(args.logq),
     }
 
