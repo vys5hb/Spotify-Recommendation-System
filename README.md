@@ -1,6 +1,6 @@
 # Spotify Recommendation System
 
-A two-tower retrieval model built on the Spotify Million Playlist Dataset (MPD). It contains 1M playlists, 66M playlist-track interactions, and 33GB of raw JSON. I created 2 baselines using popularity and track co-occurrence, and compared the results against my trained two-tower model. The data pipelien is built with PySpark, the model is built with PyTorch, and the training was ran on Kaggle using a T4 GPU.
+A two-tower retrieval model built on the [Spotify Million Playlist Dataset](https://engineering.atspotify.com/2018/5/introducing-the-million-playlist-dataset-and-recsys-challenge-2018) (MPD).It contains 1M playlists, 66M playlist-track interactions, and 33GB of raw JSON. I created 2 baselines using popularity and track co-occurrence, and compared the results against my trained two-tower model. The data pipelien is built with PySpark, the model is built with PyTorch, and the training was run on Kaggle using a T4 GPU.
 
 ## Results
 
@@ -10,7 +10,7 @@ Validation split (50,110 playlists):
 
 | model | Recall@10 | Recall@100 | NDCG@100 |
 |---|---|---|---|
-| two-tower (this repo) | 0.120 | 0.358 | 0.215 |
+| two-tower | 0.120 | 0.358 | 0.215 |
 | co-occurrence baseline | 0.073 | 0.236 | 0.137 |
 | popularity baseline | 0.008 | 0.044 | 0.020 |
 
