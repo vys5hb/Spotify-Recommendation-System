@@ -1,6 +1,6 @@
 # Spotify Recommendation System
 
-A two-tower retrieval model built on the [Spotify Million Playlist Dataset](https://engineering.atspotify.com/2018/5/introducing-the-million-playlist-dataset-and-recsys-challenge-2018) (MPD).It contains 1M playlists, 66M playlist-track interactions, and 33GB of raw JSON. I created 2 baselines using popularity and track co-occurrence, and compared the results against my trained two-tower model. The data pipelien is built with PySpark, the model is built with PyTorch, and the training was run on Kaggle using a T4 GPU.
+A two-tower retrieval model built on the [Spotify Million Playlist Dataset](https://engineering.atspotify.com/2018/5/introducing-the-million-playlist-dataset-and-recsys-challenge-2018) (MPD). It contains 1M playlists, 66M playlist-track interactions, and 33GB of raw JSON. I created 2 baselines using popularity and track co-occurrence, and compared the results against my trained two-tower model. The data pipeline is built with PySpark, the model is built with PyTorch, and the training was run on Kaggle using a T4 GPU.
 
 ## Results
 
@@ -31,13 +31,13 @@ I also tried a deeper [256, 256] head and a bigger 8192 batch. Both were measure
 - [`scripts/build_splits.py`](scripts/build_splits.py) — deterministic 90/5/5 train/val/test split, for each val/test playlist it hides 20% of the tracks, capped at 10, as the positive targets to predict
 - [`scripts/run_baselines.py`](scripts/run_baselines.py) — the popularity and co-occurrence baselines, plus the Recall/Precision/NDCG@K definitions everything else reuses
 - [`scripts/build_vocab.py`](scripts/build_vocab.py) — maps 2.1M track, 283K artist, and 705K album string IDs to integer indices, with index 0 reserved for padding and 1 for unknown IDs
-- [`scripts/twotower/dataset.py`](scripts/twotower/dataset.py) — encodes the 60M row traiing table once into a flat `.npz` cache, each epoch samples one held-out positive per playlist and uses the rest as context
-- [`scripts/twotower/model.py`](scripts/twotower/model.py) — Saves the two-tower model. Both towers share track/artist/album embedding tables, the playlist tower mean-pools its context, and the loss is in-batch softmax with the logQ correction
+- [`scripts/twotower/dataset.py`](scripts/twotower/dataset.py) — encodes the 60M row training table once into a flat `.npz` cache, each epoch samples one held-out positive per playlist and uses the rest as context
+- [`scripts/twotower/model.py`](scripts/twotower/model.py) — Defines the two-tower model. Both towers share track/artist/album embedding tables, the playlist tower mean-pools its context, and the loss is in-batch softmax with the logQ correction
 - [`scripts/twotower/train.py`](scripts/twotower/train.py) - training loop
 - [`evaluate.py`](scripts/twotower/evaluate.py) — full-catalog evaluation
 
 ## Design choices
-- **In-batch negatives with a logQ correction.** Each batch contains 4096 playlists and each playlist contains a single random positive sample, while the other 4095 songs in the batch are a free negative in training. Using this system of randomly sampled positives, it unporportionally samples popular tracks, so the model over-penalizes popular tracks. Subtracting logQ, log(track frequency) from the logits, we undo the bias. This design choice improved Recall@100 by 80%.
+- **In-batch negatives with a logQ correction.** Each batch contains 4096 playlists and each playlist contains a single random positive sample, while the other 4095 songs in the batch are a free negative in training. Using this system of randomly sampled positives, it disproportionately samples popular tracks, so the model over-penalizes popular tracks. Subtracting logQ, log(track frequency) from the logits, we undo the bias. This design choice improved Recall@100 by 80%.
 - **Shared embedding tables.** A track has one vector whether it appears as playlist context or as the candidate being scored, so the two towers live in the same space.
 - **PAD at zero, UNK at one.** Padding can never leak into the mean-pool, and tracks in val/test, but never seen in training still encode to a shared "unknown" vector instead of breaking retrieval.
 - **A cache instead of Spark at train time.** Training reads one `.npz` of flat arrays with offsets, so epochs never touch Spark, massively reducing training time and memory.
@@ -63,8 +63,6 @@ python3 scripts/twotower/dataset.py --input data/gold/train_playlist_tracks.parq
 python3 scripts/twotower/train.py --dim 128 --hidden-dims 256 --batch-size 4096 --epochs 30 --temperature 0.10 --logq
 python3 scripts/twotower/evaluate.py --checkpoint artifacts/twotower/checkpoints/best.pt --split validation
 ```
-
-Tests: `python -m pytest tests/ -q` — 32 tests covering the vocab, dataset, model, training, and eval code.
 
 ## What I'd add next
 
