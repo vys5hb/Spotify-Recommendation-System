@@ -1,15 +1,10 @@
 # Spotify Recommendation System
 
-A two-tower retrieval model that continues Spotify playlists, built on the Spotify
-Million Playlist Dataset (1M playlists, 66M playlist-track interactions, 33GB of raw
-JSON). My goal was to beat two classic baselines (global popularity and track
-co-occurrence) with a learned model, under an honest full-catalog evaluation. The
-data pipeline is PySpark, the model is PyTorch, and training ran on a Kaggle T4.
+A two-tower retrieval model built on the Spotify Million Playlist Dataset (MPD). It contains 1M playlists, 66M playlist-track interactions, and 33GB of raw JSON. I created 2 baselines using popularity and track co-occurrence, and compared the results against my trained two-tower model. The data pipelien is built with PySpark, the model is built with PyTorch, and the training was ran on Kaggle using a T4 GPU.
 
 ## Results
 
-All three models are scored the same way: rank every track in the 2.1M-track catalog
-for each held-out playlist, then check the hidden tracks against the top K.
+All 3 of the models were scored the same way. I ranked every track in the 2.1M track catalog for each held-out playlist, then checked the hidden tracks against a top K.
 
 Validation split (50,110 playlists):
 
@@ -28,27 +23,25 @@ How it got there:
 - adding a logQ sampling-bias correction brought it to 0.328
 - adding a small MLP head on each tower brought it to 0.358
 
-I also tried a deeper [256, 256] head and a bigger 8192 batch. Both were measured
-against the final config and neither beat it, so neither is in it.
+I also tried a deeper [256, 256] head and a bigger 8192 batch. Both were measured against the final config and neither beat it, so neither is in it.
 
 ## How it works
 
-- [`scripts/ingest_mpd.py`](scripts/ingest_mpd.py) — flattens the 33GB of nested MPD JSON into 3 Parquet tables (playlists, tracks, playlist_tracks) with PySpark
-- [`scripts/build_splits.py`](scripts/build_splits.py) — deterministic 90/5/5 train/val/test split; for each val/test playlist it hides 20% of the tracks (capped at 10) as the targets to predict
+- [`scripts/ingest_mpd.py`](scripts/ingest_mpd.py) — flattens the 33GB of nested MPD JSON into 3 Parquet tables (playlists, tracks, playlist_tracks) with PySpark for scalability
+- [`scripts/build_splits.py`](scripts/build_splits.py) — deterministic 90/5/5 train/val/test split, for each val/test playlist it hides 20% of the tracks, capped at 10, as the positive targets to predict
 - [`scripts/run_baselines.py`](scripts/run_baselines.py) — the popularity and co-occurrence baselines, plus the Recall/Precision/NDCG@K definitions everything else reuses
-- [`scripts/build_vocab.py`](scripts/build_vocab.py) — maps 2.1M track / 283K artist / 705K album string IDs to integer indices, with index 0 reserved for padding and 1 for unknown IDs
-- [`scripts/twotower/dataset.py`](scripts/twotower/dataset.py) — encodes the 60M-row train table once into a flat `.npz` cache; each epoch samples one held-out positive per playlist and uses the rest as context
-- [`scripts/twotower/model.py`](scripts/twotower/model.py) — the model itself: both towers share track/artist/album embedding tables, the playlist tower mean-pools its context, and the loss is in-batch softmax with the logQ correction
-- [`scripts/twotower/train.py`](scripts/twotower/train.py) / [`evaluate.py`](scripts/twotower/evaluate.py) — training loop and full-catalog evaluation
+- [`scripts/build_vocab.py`](scripts/build_vocab.py) — maps 2.1M track, 283K artist, and 705K album string IDs to integer indices, with index 0 reserved for padding and 1 for unknown IDs
+- [`scripts/twotower/dataset.py`](scripts/twotower/dataset.py) — encodes the 60M row traiing table once into a flat `.npz` cache, each epoch samples one held-out positive per playlist and uses the rest as context
+- [`scripts/twotower/model.py`](scripts/twotower/model.py) — Saves the two-tower model. Both towers share track/artist/album embedding tables, the playlist tower mean-pools its context, and the loss is in-batch softmax with the logQ correction
+- [`scripts/twotower/train.py`](scripts/twotower/train.py) - training loop
+- [`evaluate.py`](scripts/twotower/evaluate.py) — full-catalog evaluation
 
 ## Design choices
-
-- **In-batch negatives with a logQ correction.** Each batch of 4096 positives doubles as 4095 free negatives per playlist, but that samples negatives by popularity, so the model over-penalizes popular tracks. Subtracting log(track frequency) from the logits (Yi et al. 2019) undoes the bias — this one change was worth +80% Recall@100.
-- **Shared embedding tables.** A track has one vector whether it appears as playlist context or as the candidate being scored, so the two towers speak the same space.
-- **PAD frozen at zero, UNK for cold-start.** Padding can never leak into the mean-pool, and tracks never seen in training still encode to a shared "unknown" vector instead of breaking retrieval.
-- **A cache instead of Spark at train time.** Training reads one `.npz` of flat arrays with offsets, so epochs never touch Spark.
-- **The eval matches the baselines exactly.** Same metric definitions, same masked targets, same catalog — the table above is apples to apples.
-- **One hidden layer, not two.** I ablated the MLP head: [256] beat both the plain linear towers and [256, 256].
+- **In-batch negatives with a logQ correction.** Each batch contains 4096 playlists and each playlist contains a single random positive sample, while the other 4095 songs in the batch are a free negative in training. Using this system of randomly sampled positives, it unporportionally samples popular tracks, so the model over-penalizes popular tracks. Subtracting logQ, log(track frequency) from the logits, we undo the bias. This design choice improved Recall@100 by 80%.
+- **Shared embedding tables.** A track has one vector whether it appears as playlist context or as the candidate being scored, so the two towers live in the same space.
+- **PAD at zero, UNK at one.** Padding can never leak into the mean-pool, and tracks in val/test, but never seen in training still encode to a shared "unknown" vector instead of breaking retrieval.
+- **A cache instead of Spark at train time.** Training reads one `.npz` of flat arrays with offsets, so epochs never touch Spark, massively reducing training time and memory.
+- **One hidden layer, not two.** A single MLP head, [256] beat both the plain linear towers and [256, 256].
 
 ## Running it
 
@@ -75,6 +68,6 @@ Tests: `python -m pytest tests/ -q` — 32 tests covering the vocab, dataset, mo
 
 ## What I'd add next
 
-- a FAISS/ANN index over the item vectors, so retrieval doesn't need a full 2.1M-track matmul
-- playlist titles as a model feature (already ingested, not used yet)
+- a FAISS/ANN index over the item vectors, so retrieval doesn't need a full 2.1M track matrix multiplication
+- playlist titles as a model feature
 - a second-stage ranker over the top few hundred retrieved candidates
