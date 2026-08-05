@@ -1,4 +1,5 @@
 # Spotify Recommendation System
+#### By: Ethan Ooi
 
 A two-tower retrieval model built on the [Spotify Million Playlist Dataset](https://engineering.atspotify.com/2018/5/introducing-the-million-playlist-dataset-and-recsys-challenge-2018) (MPD). It contains 1M playlists, 66M playlist-track interactions, and 33GB of raw JSON. I created 2 baselines using popularity and track co-occurrence, and compared the results against my trained two-tower model. The data pipeline is built with PySpark, the model is built with PyTorch, and the training was run on Kaggle using a T4 GPU.
 
